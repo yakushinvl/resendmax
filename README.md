@@ -43,7 +43,7 @@ python main.py
 4. В левом меню выберите "Local storage" и найдите переменную под ключом __oneme_auth
 5. Скопируйте значение `"token"` этой переменной и вставьте его в файл окружения `.env` в строку `MAX_TOKEN`  
 
-![](readme\get_token.png)  
+![](readme/get_token.png)  
 
 Значение переменной __oneme_auth выглядит примерно так:
 ```json

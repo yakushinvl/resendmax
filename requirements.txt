@@ -1,0 +1,7 @@
+dotenv~=0.9.9
+python-dotenv~=1.1.1
+sqlmodel~=0.0.38
+aiogram~=3.28.0
+vkbottle~=4.8.2
+aiohttp~=3.13.5
+websockets~=15.0.1

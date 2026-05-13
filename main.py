@@ -89,7 +89,7 @@ async def handle_max_message(msg_payload):
                 if not formatted_text and not tg_media:
                     continue
                     
-                await tg_bot.send_to_tg(mapping.target_chat_id, formatted_text, media=tg_media)
+                await tg_bot.send_to_tg(mapping.target_chat_id, formatted_text, media=tg_media, thread_id=mapping.target_thread_id)
         except Exception as e:
             logger.error(f"Ошибка пересылки в {mapping.platform}:{mapping.target_chat_id}: {e}")
 

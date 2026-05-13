@@ -60,8 +60,10 @@ async def my_chats(message: types.Message):
         return
     await message.answer("Все твои подключённые чаты:")
     for m in mappings:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отключить", callback_data=f"del_{m.id}", style="danger")]])
-        await message.answer(f"📍 {m.max_chat_title}\nID MAX: {m.max_chat_id}\nID TG: {m.target_chat_id}", reply_markup=kb)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отключить", callback_data=f"del_{m.id}", style="danger")]])
+        topic_str = f"\nТопик ID: {m.target_thread_id}" if m.target_thread_id else ""
+        await message.answer(f"📍 {m.max_chat_title}\nID MAX: {m.max_chat_id}\nID TG: {m.target_chat_id}{topic_str}", reply_markup=kb)
+
 
 @dp.callback_query(F.data.startswith("del_"))
 async def delete_callback(callback: types.CallbackQuery):
@@ -101,15 +103,17 @@ async def chat_handler(message: types.Message):
     code = message.text.strip().upper()
     pending = database.pop_pending_connection(code)
     if pending:
-        if database.add_chat_mapping(pending.max_chat_id, pending.max_chat_title, "tg", message.chat.id, pending.user_platform_id, "tg"):
-            await message.answer(f"Чат «{pending.max_chat_title}» успешно привязан")
+        thread_id = message.message_thread_id
+        if database.add_chat_mapping(pending.max_chat_id, pending.max_chat_title, "tg", message.chat.id, pending.user_platform_id, "tg", thread_id):
+            await message.answer(f"Чат '{pending.max_chat_title}' привязан!")
         else: await message.answer("Этот чат уже привязан к этой группе.")
 
-async def send_to_tg(chat_id: int, text: str, media: list = None):
+async def send_to_tg(chat_id: int, text: str, media: list = None, thread_id: int = None):
     """Отправляет сообщение в Telegram"""
     if not media:
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", message_thread_id=thread_id)
     else:
         for i, m in enumerate(media):
             if i == 0: m.caption, m.parse_mode = text, "HTML"
-        await bot.send_media_group(chat_id=chat_id, media=media)
+        await bot.send_media_group(chat_id=chat_id, media=media, message_thread_id=thread_id)
+

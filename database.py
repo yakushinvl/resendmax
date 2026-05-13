@@ -41,18 +41,20 @@ def get_user_limit(user_id: int, platform: str) -> int:
         db_limit = session.exec(select(UserLimit).where(UserLimit.user_platform_id == user_id, UserLimit.platform == platform)).first()
         return db_limit.max_limit if db_limit else 3
 
-def add_chat_mapping(max_chat_id: int, max_chat_title: str, platform: str, target_chat_id: int, owner_id: int, owner_platform: str) -> bool:
-    """Добавляет новую привязку, если такой еще нет"""
+def add_chat_mapping(max_chat_id: int, max_chat_title: str, platform: str, target_chat_id: int, owner_id: int, owner_platform: str, target_thread_id: Optional[int] = None) -> bool:
+    """Добавляет новую привязку, если такой еще нет."""
     with Session(engine) as session:
         statement = select(ChatMapping).where(
             ChatMapping.max_chat_id == max_chat_id,
             ChatMapping.platform == platform,
-            ChatMapping.target_chat_id == target_chat_id
+            ChatMapping.target_chat_id == target_chat_id,
+            ChatMapping.target_thread_id == target_thread_id
         )
         if session.exec(statement).first(): return False
         mapping = ChatMapping(
             max_chat_id=max_chat_id, max_chat_title=max_chat_title,
             platform=platform, target_chat_id=target_chat_id,
+            target_thread_id=target_thread_id,
             owner_id=owner_id, owner_platform=owner_platform
         )
         session.add(mapping)

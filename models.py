@@ -8,8 +8,10 @@ class ChatMapping(SQLModel, table=True):
     max_chat_title: str = Field(default="Неизвестный чат")
     platform: str  # "vk" или "tg"
     target_chat_id: int
+    target_thread_id: Optional[int] = None  # ID топика (для Telegram)
     owner_id: int  # ID пользователя-создателя
     owner_platform: str  # "vk" или "tg"
+
 
 class PendingConnection(SQLModel, table=True):
     """Временная запись для процесса привязки чата через код"""

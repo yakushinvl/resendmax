@@ -105,7 +105,7 @@ async def chat_handler(message: types.Message):
     if pending:
         thread_id = message.message_thread_id
         if database.add_chat_mapping(pending.max_chat_id, pending.max_chat_title, "tg", message.chat.id, pending.user_platform_id, "tg", thread_id):
-            await message.answer(f"Чат '{pending.max_chat_title}' привязан!")
+            await message.answer(f"Чат «{pending.max_chat_title}» привязан!")
         else: await message.answer("Этот чат уже привязан к этой группе.")
 
 async def send_to_tg(chat_id: int, text: str, media: list = None, thread_id: int = None):

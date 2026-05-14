@@ -28,7 +28,7 @@ def get_main_keyboard(user_id: int):
         kb.row().add(Text("Админ-панель"), color=KeyboardButtonColor.NEGATIVE)
     return kb.get_json()
 
-@bot.on.private_message(text=["начать", "start", "меню"])
+@bot.on.private_message(text=["Начать", "начать", "НАЧАТЬ", "Start", "start", "START", "Меню", "меню", "МЕНЮ", "Menu", "menu", "MENU"])
 async def start_handler(message: Message):
     await message.answer("Ты в меню:", keyboard=get_main_keyboard(message.from_id))
 

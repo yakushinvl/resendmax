@@ -3,7 +3,8 @@ import random
 import string
 import logging
 from vkbottle.bot import Bot, Message
-from vkbottle import Keyboard, Text, KeyboardButtonColor, PhotoMessageUploader, DocMessagesUploader
+from vkbottle import API
+from vkbottle import Keyboard, Text, KeyboardButtonColor, PhotoMessageUploader, DocMessagesUploader, VideoUploader
 import database
 
 logger = logging.getLogger("VK_Bot")
@@ -12,9 +13,27 @@ ADMIN_ID = 505357247
 # Глобальные настройки
 max_client_instance = None
 vk_token = os.getenv("VK_TOKEN")
+vk_user_token = os.getenv("VK_USER_TOKEN")
 bot = Bot(vk_token)
 photo_uploader = PhotoMessageUploader(bot.api)
 doc_uploader = DocMessagesUploader(bot.api)
+
+user_video_uploader = VideoUploader(API(vk_user_token))
+
+_group_id = None
+
+async def get_group_id():
+    global _group_id
+    if _group_id is None:
+        try:
+            resp = await bot.api.groups.get_by_id()
+            if hasattr(resp, "groups") and resp.groups: _group_id = resp.groups[0].id
+            elif isinstance(resp, list) and resp: _group_id = getattr(resp[0], "id", 0)
+            else: _group_id = getattr(resp, "id", 0)
+        except Exception as e:
+            logger.error(f"Ошибка получения group_id: {e}")
+            return 0
+    return _group_id
 
 def generate_code(length=8):
     """Генерирует код привязки"""
@@ -30,7 +49,7 @@ def get_main_keyboard(user_id: int):
 
 @bot.on.private_message(text=["Начать", "начать", "НАЧАТЬ", "Start", "start", "START", "Меню", "меню", "МЕНЮ", "Menu", "menu", "MENU"])
 async def start_handler(message: Message):
-    await message.answer("Ты в меню:", keyboard=get_main_keyboard(message.from_id))
+    await message.answer("Меню управления:", keyboard=get_main_keyboard(message.from_id))
 
 @bot.on.private_message(text="Админ-панель")
 async def admin_panel(message: Message):
@@ -103,8 +122,9 @@ async def chat_handler(message: Message):
     pending = database.pop_pending_connection(code)
     if pending:
         if database.add_chat_mapping(pending.max_chat_id, pending.max_chat_title, "vk", message.peer_id, pending.user_platform_id, "vk"):
-            await message.answer(f"Чат «{pending.max_chat_title}» успешно привязан")
-        else: await message.answer("Этот чат уже привязан к этой группе")
+            await message.answer(f"Чат «{pending.max_chat_title}» успешно привязан!")
+        else:
+            await message.answer("Этот чат уже привязан к этой группе")
 
 async def send_to_vk(chat_id: int, text: str, format_data: str = "", attachments: list = None):
     """Отправляет сообщение во ВКонтакте"""

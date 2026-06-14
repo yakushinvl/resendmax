@@ -3,7 +3,7 @@ import random
 import string
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo, InputMediaDocument
 import database
 
 dp = Dispatcher()
@@ -12,7 +12,7 @@ ADMIN_ID = 499223756
 # Глобальные настройки
 max_client_instance = None
 tg_token = os.getenv("TG_TOKEN")
-bot = Bot(token=tg_token)
+bot = Bot(token=tg_token) if tg_token else None
 
 def generate_code(length=8):
     """Генерирует код привязки"""
@@ -27,7 +27,7 @@ def get_main_keyboard(user_id: int):
 
 @dp.message(Command("start", "menu"))
 async def start_handler(message: types.Message):
-    await message.answer("Ты в меню:", reply_markup=get_main_keyboard(message.from_user.id))
+    await message.answer("Меню управления:", reply_markup=get_main_keyboard(message.from_user.id))
 
 @dp.message(F.text == "Админ-панель")
 async def admin_panel(message: types.Message):
@@ -93,7 +93,7 @@ async def private_handler(message: types.Message):
             chat = await max_client_instance.join_chat(message.text.strip())
             code = generate_code()
             database.add_pending_connection(code, chat['id'], chat.get('title', 'Без названия'), uid, "tg")
-            await message.answer(f"Я зашел в «{chat.get('title')}». Для привязки группового чата добавь меня в этот чат в Telegram и введи этот код: <code>{code}</code>", parse_mode="HTML")
+            await message.answer(f"Я зашёл в «{chat.get('title')}». Для привязки группового чата добавь меня в этот чат в Telegram и введи этот код: <code>{code}</code>", parse_mode="HTML")
         except Exception as e:
             await message.answer(f"Ошибка: {e}")
 
@@ -106,14 +106,24 @@ async def chat_handler(message: types.Message):
         thread_id = message.message_thread_id
         if database.add_chat_mapping(pending.max_chat_id, pending.max_chat_title, "tg", message.chat.id, pending.user_platform_id, "tg", thread_id):
             await message.answer(f"Чат «{pending.max_chat_title}» привязан!")
-        else: await message.answer("Этот чат уже привязан к этой группе.")
+        else: await message.answer("Этот чат уже привязан к этой группе")
 
 async def send_to_tg(chat_id: int, text: str, media: list = None, thread_id: int = None):
     """Отправляет сообщение в Telegram"""
+    if not bot:
+        return
     if not media:
         await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", message_thread_id=thread_id)
     else:
+        updated_media = []
         for i, m in enumerate(media):
-            if i == 0: m.caption, m.parse_mode = text, "HTML"
-        await bot.send_media_group(chat_id=chat_id, media=media, message_thread_id=thread_id)
-
+            if i == 0:
+                params = {"media": m.media, "caption": text, "parse_mode": "HTML"}
+                if isinstance(m, InputMediaPhoto): new_m = InputMediaPhoto(**params)
+                elif isinstance(m, InputMediaVideo): new_m = InputMediaVideo(**params)
+                elif isinstance(m, InputMediaDocument): new_m = InputMediaDocument(**params)
+                else: new_m = m
+                updated_media.append(new_m)
+            else:
+                updated_media.append(m)
+        await bot.send_media_group(chat_id=chat_id, media=updated_media, message_thread_id=thread_id)

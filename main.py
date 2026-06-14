@@ -1,8 +1,10 @@
 import asyncio
 import logging
 import os
-from dotenv import load_dotenv
+import time
+import random
 
+from dotenv import load_dotenv
 load_dotenv()
 
 import database
@@ -11,13 +13,11 @@ import tg_bot
 from max_client import MaxClient
 from formatter import max_elements_to_html, max_elements_to_vk_format
 
-import time
-
-# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Orchestrator")
 
 ATTACHMENTS_DIR = "attachments"
+os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
 
 async def handle_max_message(msg_payload):
     chat_id = msg_payload.get("chatId")
@@ -33,126 +33,101 @@ async def handle_max_message(msg_payload):
     if not mappings:
         return
 
-    # Обработка вложений
-    vk_attachments = []
-    tg_media = []
-    downloaded_files = []
-    placeholder_text = ""
-    
-    attaches = msg.get("attaches", [])
-    for a in attaches:
+    vk_attachments, tg_media, downloaded_files = [], [], []
+    vk_peer_id = next((m.target_chat_id for m in mappings if m.platform == "vk"), 0)
+
+    for a in msg.get("attaches", []):
         atype = a.get("_type")
-        
         if atype == "STICKER":
             continue
-            
         try:
-            url = a.get("baseUrl") or a.get("url") or a.get("previewUrl")
-            if not url:
-                continue
+            url, name = None, None
+            is_photo = is_video = is_file = False
 
             if atype == "PHOTO":
-                name = f"photo_{int(time.time())}.jpg"
-                file_path = os.path.join(ATTACHMENTS_DIR, name)
-                file_data = await max_client.download_file(url)
-                with open(file_path, "wb") as f:
-                    f.write(file_data)
-                downloaded_files.append(file_path)
+                url = a.get("baseUrl") or a.get("url") or a.get("previewUrl")
+                name = f"p_{int(time.time())}_{random.randint(100,999)}.jpg"
+                is_photo = True
+            elif atype == "VIDEO":
+                vid = a.get("videoId")
+                if vid:
+                    url = await max_client.get_video_url(chat_id, msg.get("id"), vid)
+                    name = f"v_{int(time.time())}_{random.randint(100,999)}.mp4"
+                    is_video = True
+            elif atype == "FILE":
+                fid = a.get("fileId")
+                if fid:
+                    url = await max_client.get_file_url(chat_id, msg.get("id"), fid)
+                    name = a.get("name") or f"f_{int(time.time())}_{random.randint(100,999)}"
+                    is_file = True
 
-                # Загрузка в ВК
-                vk_photo = await vk_bot.photo_uploader.upload(file_path)
-                vk_attachments.append(vk_photo)
-                # Подготовка для TG
-                tg_media.append(tg_bot.InputMediaPhoto(media=tg_bot.BufferedInputFile(file_data, filename=name)))
-            
-            else:
-                # Заглушка для остальных типов вложений (VIDEO, FILE, AUDIO и т.д.)
-                if "[Отправлено видео/файл" not in placeholder_text:
-                    placeholder_text += "\n\n[Отправлено видео/файл, которое пока не получается переслать]"
+            if url:
+                path = os.path.join(ATTACHMENTS_DIR, name)
+                data = await max_client.download_file(url)
+                with open(path, "wb") as f:
+                    f.write(data)
+                downloaded_files.append(path)
 
+                if is_photo:
+                    vk_attachments.append(await vk_bot.photo_uploader.upload(path, peer_id=vk_peer_id))
+                    tg_media.append(tg_bot.InputMediaPhoto(media=tg_bot.BufferedInputFile(data, filename=name)))
+                elif is_video:
+                    v = await (vk_bot.user_video_uploader or vk_bot.video_uploader).upload(path, name=name, group_id=await vk_bot.get_group_id())
+                    vk_attachments.append(v if isinstance(v, str) else f"video{v.owner_id}_{v.video_id}")
+                    tg_media.append(tg_bot.InputMediaVideo(media=tg_bot.BufferedInputFile(data, filename=name)))
+                elif is_file:
+                    vk_attachments.append(await vk_bot.doc_uploader.upload(path, title=name, peer_id=vk_peer_id))
+                    tg_media.append(tg_bot.InputMediaDocument(media=tg_bot.BufferedInputFile(data, filename=name)))
         except Exception as e:
-            logger.error(f"Ошибка обработки вложения {atype}: {e}")
+            logger.error(f"Ошибка с аттачем {atype}: {e}")
 
-    final_text = f"{text}{placeholder_text}".strip()
-
-    for mapping in mappings:
+    for m in mappings:
         try:
-            if mapping.platform == "vk":
-                if not final_text and not vk_attachments:
-                    continue
-                
-                vk_format = max_elements_to_vk_format(elements)
-                await vk_bot.send_to_vk(mapping.target_chat_id, final_text, format_data=vk_format, attachments=vk_attachments)
-            elif mapping.platform == "tg":
-                formatted_text = max_elements_to_html(final_text, elements)
-                
-                if not formatted_text and not tg_media:
-                    continue
-                    
-                await tg_bot.send_to_tg(mapping.target_chat_id, formatted_text, media=tg_media, thread_id=mapping.target_thread_id)
+            if m.platform == "vk" and (text or vk_attachments):
+                await vk_bot.send_to_vk(m.target_chat_id, text, format_data=max_elements_to_vk_format(elements), attachments=vk_attachments)
+            elif m.platform == "tg" and (text or tg_media):
+                await tg_bot.send_to_tg(m.target_chat_id, max_elements_to_html(text, elements), media=tg_media, thread_id=m.target_thread_id)
         except Exception as e:
-            logger.error(f"Ошибка пересылки в {mapping.platform}:{mapping.target_chat_id}: {e}")
+            logger.error(f"Ошибка пересылки {m.platform}: {e}")
 
-    for f_path in downloaded_files:
-        try:
-            if os.path.exists(f_path):
-                os.remove(f_path)
+    for p in downloaded_files:
+        try: 
+            if os.path.exists(p):
+                os.remove(p)
         except:
             pass
 
 async def main():
     database.create_db_and_tables()
+    m_tok, m_phone = os.getenv("MAX_TOKEN"), os.getenv("MAX_PHONE")
+    if not m_tok and not m_phone: return
     
-    max_token = os.getenv("MAX_TOKEN")
-    max_phone = os.getenv("MAX_PHONE")
-    vk_token = os.getenv("VK_TOKEN")
-    tg_token = os.getenv("TG_TOKEN")
-    
-    if not max_token and not max_phone:
-        logger.error("В .env не найдены ни MAX_TOKEN, ни MAX_PHONE")
-        return
-    
-    if not vk_token:
-        logger.warning("VK_TOKEN не найден. Бот ВК не будет запущен.")
-    
-    if not tg_token:
-        logger.warning("TG_TOKEN не найден. Бот TG не будет запущен.")
-
     global max_client
-    max_client = MaxClient(token=max_token, phone=max_phone)
-    
-    vk_bot.max_client_instance = max_client
-    tg_bot.max_client_instance = max_client
+    max_client = MaxClient(token=m_tok, phone=m_phone)
+    vk_bot.max_client_instance = tg_bot.max_client_instance = max_client
     
     try:
         await max_client.connect()
-    except Exception as e:
-        logger.error(f"Ошибка подключения к MAX: {e}")
+    except:
         return
         
     max_client.add_message_handler(handle_max_message)
-    
     tasks = []
-    
-    if vk_token:
+    if os.getenv("VK_TOKEN"):
         vk_bot.bot.loop_wrapper.loop = asyncio.get_running_loop()
         vk_bot.bot.loop_wrapper._running = True
         tasks.append(vk_bot.bot.run_polling())
-        logger.info("Задача бота ВК добавлена.")
+        logger.info("Бот ВКонтакте готов")
 
-    if tg_token:
+    if os.getenv("TG_TOKEN"):
         tasks.append(tg_bot.dp.start_polling(tg_bot.bot))
-        logger.info("Задача бота TG добавлена.")
+        logger.info("Бот Telegram готов")
     
-    if not tasks:
-        logger.error("Нет ботов для запуска (отсутствуют токены).")
-        return
+    if tasks:
+        logger.info("Запуск ботов")
+        await asyncio.gather(*tasks)
 
-    logger.info("Запуск опроса ботов...")
-    await asyncio.gather(*tasks)
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+try:
+    asyncio.run(main())
+except KeyboardInterrupt:
+    pass

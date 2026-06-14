@@ -1,4 +1,4 @@
-from typing import Dict, List, Any
+from typing import Dict, List
 import json
 
 def max_elements_to_html(text: str, elements: List[Dict]) -> str:
@@ -21,7 +21,6 @@ def max_elements_to_html(text: str, elements: List[Dict]) -> str:
         events.append((start, i, False, e))
         events.append((start + length, -i, True, e))
 
-    # Сортировка: позиция, затем закрывающие события перед открывающими
     events.sort(key=lambda x: (x[0], not x[2]))
 
     result, last_pos, active_tags = [], 0, []
@@ -52,7 +51,7 @@ def max_elements_to_html(text: str, elements: List[Dict]) -> str:
     return "".join(result)
 
 def max_elements_to_vk_format(elements: List[Dict]) -> str:
-    """Генерирует JSON format_data для API ВКонтакте"""
+    """Конвертирует элементы форматирования MAX в JSON format_data для API ВКонтакте"""
     if not elements: return ""
     
     vk_items = []

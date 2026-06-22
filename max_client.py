@@ -14,6 +14,7 @@ WEBSOCKET_URI = "wss://ws-api.oneme.ru/websocket"
 WEBSOCKET_ORIGIN = "https://web.max.ru"
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+
 class Opcode(int, Enum):
     PING = 1
     SESSION_INIT = 6
@@ -26,6 +27,7 @@ class Opcode(int, Enum):
     VIDEO_PLAY = 83
     FILE_DOWNLOAD = 88
     NOTIF_MESSAGE = 128
+
 
 class MaxClient:
     def __init__(self, token: Optional[str] = None, phone: Optional[str] = None, logger: Optional[logging.Logger] = None):
@@ -46,20 +48,36 @@ class MaxClient:
         try:
             self.ws = await websockets.connect(WEBSOCKET_URI, ssl=ssl_context, origin=WEBSOCKET_ORIGIN, user_agent_header=DEFAULT_USER_AGENT)
             self.is_connected = True
-            
+
             # Очистка ожидающих ответов
             for f in list(self.pending_responses.values()):
                 if not f.done(): f.set_exception(Exception("Connection reset"))
             self.pending_responses.clear()
 
             asyncio.create_task(self._recv_loop())
-            
+
             await self._send_and_wait(Opcode.SESSION_INIT, {"deviceId": self.device_id, "userAgent": {"deviceType": "WEB"}})
             if not self.token and self.phone: await self._login_flow()
             if not self.token: raise ValueError("Отсутствует токен или номер телефона")
 
+            login_resp = await self._send_and_wait(Opcode.LOGIN, {
+                "token": self.token,
+                "chatsCount": 40,
+                "interactive": True,
+                "chatsSync": -1,
+                "contactsSync": -1,
+                "presenceSync": -1,
+                "draftsSync": -1
+            })
+            if login_resp.get("payload", {}).get("error"):
+                raise Exception(f"Ошибка входа: {login_resp['payload']['error']}")
+
+            new_token = login_resp.get("payload", {}).get("token")
+            if new_token:
+                self.token = new_token
+
             self.logger.info(f"Вход выполнен")
-            
+
             if not self._ping_task or self._ping_task.done():
                 self._ping_task = asyncio.create_task(self._ping_loop())
         except Exception as e:
@@ -112,11 +130,15 @@ class MaxClient:
     async def _ping_loop(self):
         while True:
             if self.is_connected:
-                try: await self._send_and_wait(Opcode.PING, {"interactive": True}, timeout=5.0)
-                except: self.is_connected = False
+                try:
+                    await self._send_and_wait(Opcode.PING, {"interactive": True}, timeout=5.0)
+                except:
+                    self.is_connected = False
             else:
-                try: await self.connect()
-                except: await asyncio.sleep(5)
+                try:
+                    await self.connect()
+                except:
+                    await asyncio.sleep(5)
             await asyncio.sleep(30)
 
     async def _recv_loop(self):
@@ -129,7 +151,8 @@ class MaxClient:
                     if f and not f.done(): f.set_result(data)
                 if opcode == Opcode.NOTIF_MESSAGE:
                     for h in self.message_handlers: asyncio.create_task(h(data.get("payload", {})))
-        except: self.is_connected = False
+        except:
+            self.is_connected = False
 
     async def _send_and_wait(self, opcode: Opcode, payload: Dict, timeout: float = 10.0) -> Dict:
         if not self.is_connected and opcode not in (Opcode.SESSION_INIT, Opcode.LOGIN, Opcode.AUTH, Opcode.AUTH_REQUEST):

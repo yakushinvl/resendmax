@@ -5,3 +5,5 @@ aiogram~=3.28.0
 vkbottle~=4.8.2
 aiohttp~=3.13.5
 websockets~=15.0.1
+msgpack~=1.2.1
+zstandard~=0.25.0

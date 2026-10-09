@@ -1,7 +1,10 @@
+import logging
 import os
 import random
 import string
 from typing import Any, List, Optional
+
+logger = logging.getLogger("TG_Bot")
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -99,6 +102,12 @@ async def delete_callback(callback: types.CallbackQuery):
     await callback.message.delete()
 
 
+@dp.callback_query(F.data.startswith("m_"))
+async def max_callback_handler(callback: types.CallbackQuery):
+    """Ответ на нажатие дублированных инлайн-кнопок MAX"""
+    await callback.answer()
+
+
 @dp.message(F.chat.type == "private")
 async def private_handler(message: types.Message):
     if not message.text:
@@ -173,111 +182,250 @@ def _split_text(text: str, max_length: int = 4096) -> List[str]:
     return parts
 
 
+def _normalize_media_item(item: Any):
+    if isinstance(item, dict):
+        m_type = item.get("type", "file")
+        data = item.get("data", b"")
+        filename = item.get("filename", "file")
+        input_file = BufferedInputFile(data, filename=filename)
+        if m_type == "photo":
+            return "visual", "photo", input_file
+        elif m_type == "video":
+            return "visual", "video", input_file
+        else:
+            return "doc", "doc", input_file
+    elif isinstance(item, InputMediaPhoto):
+        return "visual", "photo", item.media
+    elif isinstance(item, InputMediaVideo):
+        return "visual", "video", item.media
+    elif isinstance(item, InputMediaDocument):
+        return "doc", "doc", item.media
+    else:
+        return "doc", "doc", item
+
+
 async def send_to_tg(
     chat_id: int,
     text: str = "",
     media: Optional[List[Any]] = None,
     thread_id: Optional[int] = None,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
 ):
-    """Отправляет сообщение в Telegram с поддержкой одного или нескольких вложений и HTML-разметки"""
+    """Отправляет сообщение в Telegram с поддержкой вложений, форматирования и инлайн-клавиатуры.
+    Если в MAX сообщение содержало текст и вложения, они отправляются единым сообщением (в виде подписи).
+    """
     if not bot:
         return
 
     media = media or []
 
-    # 1. Если вложений нет - отправляем как обычное текстовое сообщение (с разбивкой при необходимости)
-    if not media:
-        if not text:
+    visual_items = []
+    doc_items = []
+
+    for m in media:
+        cat, m_type, f = _normalize_media_item(m)
+        if cat == "visual":
+            visual_items.append((m_type, f))
+        else:
+            doc_items.append((m_type, f))
+
+    # 1. Если вложений нет - отправляем обычным текстовым сообщением
+    if not visual_items and not doc_items:
+        if not text and not reply_markup:
             return
-        for chunk in _split_text(text, 4096):
+        chunks = _split_text(text, 4096) if text else [""]
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
             await bot.send_message(
                 chat_id=chat_id,
-                text=chunk,
-                parse_mode="HTML",
+                text=chunk or " ",
+                parse_mode="HTML" if chunk else None,
                 message_thread_id=thread_id,
+                reply_markup=reply_markup if is_last else None,
             )
         return
 
-    # 2. Если вложения есть:
+    # 2. Если есть вложения:
     # В Telegram лимит на caption к медиа составляет 1024 символа
     caption = text if len(text) <= 1024 else ""
-    send_full_text_separately = bool(text and len(text) > 1024)
+    followup_text = text if len(text) > 1024 else ""
+    markup_sent = False
 
-    visual_media = [m for m in media if isinstance(m, (InputMediaPhoto, InputMediaVideo))]
-    doc_media = [m for m in media if isinstance(m, InputMediaDocument)]
-
-    caption_used = False
-
-    # Отправка фото и видео
-    if visual_media:
-        if not caption_used and caption:
-            visual_media[0].caption = caption
-            visual_media[0].parse_mode = "HTML"
-            caption_used = True
-
-        if len(visual_media) == 1:
-            item = visual_media[0]
-            item_caption = item.caption or None
-            item_parse_mode = item.parse_mode if item_caption else None
-            if isinstance(item, InputMediaPhoto):
-                await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=item.media,
-                    caption=item_caption,
-                    parse_mode=item_parse_mode,
-                    message_thread_id=thread_id,
-                )
-            elif isinstance(item, InputMediaVideo):
-                await bot.send_video(
-                    chat_id=chat_id,
-                    video=item.media,
-                    caption=item_caption,
-                    parse_mode=item_parse_mode,
-                    message_thread_id=thread_id,
-                )
-        else:
-            # Медиагруппы отправляются пачками максимум по 10 штук
-            for i in range(0, len(visual_media), 10):
-                batch = visual_media[i : i + 10]
-                await bot.send_media_group(
-                    chat_id=chat_id,
-                    media=batch,
-                    message_thread_id=thread_id,
-                )
-
-    # Отправка документов / файлов
-    if doc_media:
-        if not caption_used and caption:
-            doc_media[0].caption = caption
-            doc_media[0].parse_mode = "HTML"
-            caption_used = True
-
-        if len(doc_media) == 1:
-            item = doc_media[0]
-            item_caption = item.caption or None
-            item_parse_mode = item.parse_mode if item_caption else None
-            await bot.send_document(
+    # Сценарий А: Ровно ОДНО визуальное вложение (и нет документов)
+    if len(visual_items) == 1 and not doc_items:
+        m_type, f = visual_items[0]
+        cur_markup = reply_markup if not followup_text else None
+        if m_type == "photo":
+            await bot.send_photo(
                 chat_id=chat_id,
-                document=item.media,
-                caption=item_caption,
-                parse_mode=item_parse_mode,
+                photo=f,
+                caption=caption or None,
+                parse_mode="HTML" if caption else None,
+                reply_markup=cur_markup,
                 message_thread_id=thread_id,
             )
         else:
-            for i in range(0, len(doc_media), 10):
-                batch = doc_media[i : i + 10]
-                await bot.send_media_group(
+            await bot.send_video(
+                chat_id=chat_id,
+                video=f,
+                caption=caption or None,
+                parse_mode="HTML" if caption else None,
+                reply_markup=cur_markup,
+                message_thread_id=thread_id,
+            )
+        if cur_markup:
+            markup_sent = True
+
+    # Сценарий Б: Ровно ОДИН документ/аудио (и нет визуальных медиа)
+    elif len(doc_items) == 1 and not visual_items:
+        _, f = doc_items[0]
+        cur_markup = reply_markup if not followup_text else None
+        await bot.send_document(
+            chat_id=chat_id,
+            document=f,
+            caption=caption or None,
+            parse_mode="HTML" if caption else None,
+            reply_markup=cur_markup,
+            message_thread_id=thread_id,
+        )
+        if cur_markup:
+            markup_sent = True
+
+    # Сценарий В: Несколько вложений (альбомы фото/видео и/или документов)
+    else:
+        caption_assigned = False
+
+        if visual_items:
+            # Если визуальное вложение только 1, а также есть документы
+            if len(visual_items) == 1:
+                m_type, f = visual_items[0]
+                c = caption if not caption_assigned else None
+                pm = "HTML" if c else None
+                if c:
+                    caption_assigned = True
+                if m_type == "photo":
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        caption=c,
+                        parse_mode=pm,
+                        message_thread_id=thread_id,
+                    )
+                else:
+                    await bot.send_video(
+                        chat_id=chat_id,
+                        video=f,
+                        caption=c,
+                        parse_mode=pm,
+                        message_thread_id=thread_id,
+                    )
+            else:
+                for i in range(0, len(visual_items), 10):
+                    batch_raw = visual_items[i : i + 10]
+                    batch = []
+                    for j, (m_type, f) in enumerate(batch_raw):
+                        c = caption if (not caption_assigned and j == 0) else None
+                        pm = "HTML" if c else None
+                        if c:
+                            caption_assigned = True
+                        if m_type == "photo":
+                            batch.append(InputMediaPhoto(media=f, caption=c, parse_mode=pm))
+                        else:
+                            batch.append(InputMediaVideo(media=f, caption=c, parse_mode=pm))
+                    await bot.send_media_group(
+                        chat_id=chat_id,
+                        media=batch,
+                        message_thread_id=thread_id,
+                    )
+
+        if doc_items:
+            if len(doc_items) == 1:
+                _, f = doc_items[0]
+                c = caption if not caption_assigned else None
+                pm = "HTML" if c else None
+                if c:
+                    caption_assigned = True
+                await bot.send_document(
                     chat_id=chat_id,
-                    media=batch,
+                    document=f,
+                    caption=c,
+                    parse_mode=pm,
                     message_thread_id=thread_id,
                 )
+            else:
+                for i in range(0, len(doc_items), 10):
+                    batch_raw = doc_items[i : i + 10]
+                    batch = []
+                    for j, (_, f) in enumerate(batch_raw):
+                        c = caption if (not caption_assigned and j == 0) else None
+                        pm = "HTML" if c else None
+                        if c:
+                            caption_assigned = True
+                        batch.append(InputMediaDocument(media=f, caption=c, parse_mode=pm))
+                    await bot.send_media_group(
+                        chat_id=chat_id,
+                        media=batch,
+                        message_thread_id=thread_id,
+                    )
 
-    # Если текст превышал 1024 символа - отправляем полный текст отдельным сообщением
-    if send_full_text_separately:
-        for chunk in _split_text(text, 4096):
+    # 3. Если текст превышал 1024 символа - отправляем полный текст отдельным сообщением
+    if followup_text:
+        chunks = _split_text(followup_text, 4096)
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
             await bot.send_message(
                 chat_id=chat_id,
                 text=chunk,
                 parse_mode="HTML",
                 message_thread_id=thread_id,
+                reply_markup=reply_markup if (is_last and not markup_sent) else None,
             )
+            if is_last and reply_markup:
+                markup_sent = True
+
+    # 4. Если кнопки не были отправлены (например, отправлялся альбом) - отправляем их
+    if reply_markup and not markup_sent:
+        await bot.send_message(
+            chat_id=chat_id,
+            text="🔗 Кнопки к записи:",
+            reply_markup=reply_markup,
+            message_thread_id=thread_id,
+        )
+
+
+async def send_poll_to_tg(
+    chat_id: int,
+    question: str,
+    options: List[str],
+    is_anonymous: bool = True,
+    allows_multiple_answers: bool = False,
+    is_closed: bool = False,
+    thread_id: Optional[int] = None,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+):
+    """Создаёт и отправляет опрос в Telegram с приближёнными к MAX параметрами"""
+    if not bot:
+        return
+
+    # Ограничения Telegram: от 2 до 10 вариантов ответа, каждый до 100 символов
+    valid_options = [opt[:100] for opt in options[:10] if opt.strip()]
+    if len(valid_options) < 2:
+        return
+
+    poll_params = {
+        "chat_id": chat_id,
+        "question": question[:300],
+        "options": valid_options,
+        "is_anonymous": is_anonymous,
+        "allows_multiple_answers": allows_multiple_answers,
+        "is_closed": is_closed,
+        "message_thread_id": thread_id,
+    }
+    if reply_markup:
+        poll_params["reply_markup"] = reply_markup
+
+    try:
+        await bot.send_poll(**poll_params)
+    except Exception as e:
+        logger.error(f"Ошибка отправки опроса в Telegram: {e}")
+

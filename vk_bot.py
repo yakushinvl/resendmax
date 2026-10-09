@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import random
@@ -122,6 +123,8 @@ if bot:
                 database.delete_chat_mapping(p.get("id"))
                 await message.answer("Чат отключён")
                 return
+            if p.get("cmd") == "max_cb":
+                return
 
         if uid == ADMIN_ID and message.text and message.text.lower().startswith("limit "):
             try:
@@ -173,8 +176,9 @@ async def send_to_vk(
     text: str = "",
     format_data: str = "",
     attachments: Optional[List[str]] = None,
+    keyboard: Optional[str] = None,
 ):
-    """Отправляет сообщение во ВКонтакте с поддержкой format_data и вложений"""
+    """Отправляет сообщение во ВКонтакте с поддержкой format_data, вложений и клавиатуры"""
     if not bot:
         return
 
@@ -187,13 +191,22 @@ async def send_to_vk(
             params["format_data"] = format_data
         if attachments:
             params["attachment"] = ",".join(attachments)
+        if keyboard:
+            params["keyboard"] = keyboard
         await bot.api.messages.send(**params)
     else:
-        # Первую пачку отправляем с текстом и форматированием
+        # Первую пачку отправляем с текстом, форматированием и клавиатурой
         first_batch = attachments[:10]
-        params = {"peer_id": chat_id, "message": text, "random_id": 0, "attachment": ",".join(first_batch)}
+        params = {
+            "peer_id": chat_id,
+            "message": text,
+            "random_id": 0,
+            "attachment": ",".join(first_batch),
+        }
         if format_data:
             params["format_data"] = format_data
+        if keyboard:
+            params["keyboard"] = keyboard
         await bot.api.messages.send(**params)
 
         # Оставшиеся вложения отправляем отдельными сообщениями
@@ -205,3 +218,58 @@ async def send_to_vk(
                 random_id=0,
                 attachment=",".join(batch),
             )
+
+
+async def create_vk_poll(
+    question: str,
+    options: List[str],
+    is_anonymous: bool = True,
+    is_multiple: bool = False,
+    disable_unvote: bool = False,
+) -> Optional[str]:
+    """Создаёт опрос во ВКонтакте и возвращает строку вложения (например, poll-12345_678)"""
+    if not bot:
+        return None
+
+    # Ограничения ВКонтакте: от 2 до 10 вариантов ответа
+    valid_options = [opt[:100] for opt in options[:10] if opt.strip()]
+    if len(valid_options) < 2:
+        return None
+
+    group_id = await get_group_id()
+    owner_id = -group_id if group_id else None
+
+    create_params = {
+        "question": question[:255],
+        "add_answers": json.dumps(valid_options, ensure_ascii=False),
+        "is_anonymous": 1 if is_anonymous else 0,
+        "is_multiple": 1 if is_multiple else 0,
+        "disable_unvote": 1 if disable_unvote else 0,
+    }
+    if owner_id:
+        create_params["owner_id"] = owner_id
+
+    # 1. Попытка создать опрос через API бота сообщества
+    try:
+        poll = await bot.api.polls.create(**create_params)
+        p_id = getattr(poll, "id", None) or (poll.get("id") if isinstance(poll, dict) else None)
+        p_owner = getattr(poll, "owner_id", None) or (poll.get("owner_id") if isinstance(poll, dict) else None)
+        if p_id is not None and p_owner is not None:
+            return f"poll{p_owner}_{p_id}"
+    except Exception as ge:
+        logger.warning(f"Не удалось создать опрос через bot.api: {ge}")
+
+    # 2. Попытка через пользовательский токен (если доступен)
+    if vk_user_token:
+        try:
+            user_api = API(vk_user_token)
+            poll = await user_api.polls.create(**create_params)
+            p_id = getattr(poll, "id", None) or (poll.get("id") if isinstance(poll, dict) else None)
+            p_owner = getattr(poll, "owner_id", None) or (poll.get("owner_id") if isinstance(poll, dict) else None)
+            if p_id is not None and p_owner is not None:
+                return f"poll{p_owner}_{p_id}"
+        except Exception as ue:
+            logger.warning(f"Не удалось создать опрос через user_api: {ue}")
+
+    return None
+

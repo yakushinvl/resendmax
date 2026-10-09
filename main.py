@@ -10,7 +10,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import database
-from formatter import max_elements_to_html, max_elements_to_vk_format
+from formatter import (
+    build_tg_keyboard,
+    build_vk_keyboard,
+    extract_max_buttons,
+    extract_max_polls,
+    max_elements_to_html,
+    max_elements_to_vk_format,
+)
 from max_client import MaxClient
 import tg_bot
 import vk_bot
@@ -63,7 +70,7 @@ async def handle_max_message(msg_payload):
     # Захват вложений (фото, видео, файлы, аудио)
     for a in msg.get("attaches", []):
         atype = a.get("_type") or a.get("type")
-        if atype == "STICKER":
+        if atype in ("STICKER", "INLINE_KEYBOARD", "KEYBOARD", "POLL"):
             continue
         try:
             url, name = None, None
@@ -134,20 +141,42 @@ async def handle_max_message(msg_payload):
                 # Подготовка вложений для Telegram
                 if any(m.platform == "tg" for m in mappings) and tg_bot.bot:
                     try:
-                        input_file = tg_bot.BufferedInputFile(data, filename=name)
-                        if is_photo:
-                            tg_media.append(tg_bot.InputMediaPhoto(media=input_file))
-                        elif is_video:
-                            tg_media.append(tg_bot.InputMediaVideo(media=input_file))
-                        elif is_file or is_audio:
-                            tg_media.append(tg_bot.InputMediaDocument(media=input_file))
+                        m_type = "photo" if is_photo else ("video" if is_video else ("audio" if is_audio else "file"))
+                        tg_media.append({
+                            "type": m_type,
+                            "data": data,
+                            "filename": name,
+                        })
                     except Exception as tge:
                         logger.error(f"Ошибка подготовки медиа для Telegram: {tge}")
         except Exception as e:
             logger.error(f"Ошибка обработки вложения {atype}: {e}")
 
-    # Если в сообщении нет ни текста, ни медиафайлов - не пересылаем
-    if not (text or vk_attachments or tg_media):
+    # Извлечение инлайн-кнопок из MAX и построение клавиатур для TG и VK
+    button_rows = extract_max_buttons(msg)
+    tg_keyboard = build_tg_keyboard(button_rows)
+    vk_keyboard = build_vk_keyboard(button_rows)
+
+    # Извлечение опросов из MAX
+    polls = extract_max_polls(msg)
+
+    # Формирование опросов для ВКонтакте
+    for p in polls:
+        if any(m.platform == "vk" for m in mappings) and vk_bot.bot:
+            poll_attach = await vk_bot.create_vk_poll(
+                question=p["question"],
+                options=p["options"],
+                is_anonymous=p["is_anonymous"],
+                is_multiple=p["allows_multiple_answers"],
+            )
+            if poll_attach:
+                vk_attachments.append(poll_attach)
+            else:
+                poll_text = f"\n\n📊 Опрос: {p['question']}\n" + "\n".join(f"• {opt}" for opt in p["options"])
+                text = (text + poll_text).strip() if text else poll_text.strip()
+
+    # Если в сообщении нет ни текста, ни медиафайлов, ни кнопок, ни опросов - не пересылаем
+    if not (text or vk_attachments or tg_media or button_rows or polls):
         return
 
     # Формирование текста для Telegram с указанием автора
@@ -184,20 +213,37 @@ async def handle_max_message(msg_payload):
     # Рассылка по целевым чатам
     for m in mappings:
         try:
-            if m.platform == "vk" and (vk_text or vk_attachments):
+            if m.platform == "vk" and (vk_text or vk_attachments or vk_keyboard):
                 await vk_bot.send_to_vk(
                     m.target_chat_id,
                     vk_text,
                     format_data=vk_format,
                     attachments=vk_attachments,
+                    keyboard=vk_keyboard,
                 )
-            elif m.platform == "tg" and (tg_text or tg_media):
-                await tg_bot.send_to_tg(
-                    m.target_chat_id,
-                    tg_text,
-                    media=tg_media,
-                    thread_id=m.target_thread_id,
-                )
+            elif m.platform == "tg":
+                # Если есть текст, медиавложения или кнопки (без опросов) - отправляем их
+                if tg_text or tg_media or (tg_keyboard and not polls):
+                    await tg_bot.send_to_tg(
+                        m.target_chat_id,
+                        tg_text,
+                        media=tg_media,
+                        thread_id=m.target_thread_id,
+                        reply_markup=tg_keyboard if not polls else None,
+                    )
+                # Отправляем опросы в Telegram
+                for p in polls:
+                    poll_question = f"{author_name}: {p['question']}" if (author_name and not text) else p["question"]
+                    await tg_bot.send_poll_to_tg(
+                        chat_id=m.target_chat_id,
+                        question=poll_question,
+                        options=p["options"],
+                        is_anonymous=p["is_anonymous"],
+                        allows_multiple_answers=p["allows_multiple_answers"],
+                        is_closed=p["is_closed"],
+                        thread_id=m.target_thread_id,
+                        reply_markup=tg_keyboard,
+                    )
         except Exception as e:
             logger.error(f"Ошибка пересылки в {m.platform}: {e}")
 

@@ -118,7 +118,7 @@ async def max_callback_handler(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.message(F.chat.type == "private")
+@dp.message(F.chat.type == "private", F.text.lower().startswith("limit ") | F.text.contains("max.ru/join/"))
 async def private_handler(message: types.Message):
     if not message.text:
         return

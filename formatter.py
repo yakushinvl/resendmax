@@ -190,6 +190,11 @@ def extract_max_buttons(msg: dict) -> List[List[Dict[str, Any]]]:
                 if not text:
                     continue
 
+                btype = str(btn.get("type") or "").upper()
+                copy_text = None
+                if btype == "CLIPBOARD" or "copy_text" in btn:
+                    copy_text = str(btn.get("payload") or btn.get("copy_text") or "").strip() or None
+
                 url = (
                     btn.get("url")
                     or btn.get("link")
@@ -199,6 +204,8 @@ def extract_max_buttons(msg: dict) -> List[List[Dict[str, Any]]]:
                 )
                 if not url and isinstance(btn.get("web_app"), dict):
                     url = btn.get("web_app", {}).get("url")
+                elif not url and isinstance(btn.get("web_app"), str):
+                    url = btn.get("web_app")
 
                 url_str = str(url).strip() if url else None
                 if url_str and not (
@@ -217,7 +224,7 @@ def extract_max_buttons(msg: dict) -> List[List[Dict[str, Any]]]:
                 )
                 data_str = str(data).strip() if data is not None else None
 
-                current_row.append({"text": text, "url": url_str, "data": data_str})
+                current_row.append({"text": text, "url": url_str, "data": data_str, "copy_text": copy_text})
 
             if current_row:
                 result_rows.append(current_row)
@@ -246,7 +253,17 @@ def build_tg_keyboard(button_rows: List[List[Dict[str, Any]]]):
                 continue
             url = btn.get("url")
             data = btn.get("data")
-            if url:
+            copy_text = btn.get("copy_text")
+
+            if copy_text:
+                try:
+                    from aiogram.types import CopyTextButton
+                    tg_row.append(InlineKeyboardButton(text=text, copy_text=CopyTextButton(text=copy_text)))
+                except Exception:
+                    cb = f"m_{data}" if data else f"m_cb_{r_idx}_{c_idx}"
+                    cb = cb.encode("utf-8")[:64].decode("utf-8", errors="ignore")
+                    tg_row.append(InlineKeyboardButton(text=text, callback_data=cb))
+            elif url:
                 if not (url.startswith("http://") or url.startswith("https://") or url.startswith("tg://")):
                     url = "https://" + url
                 tg_row.append(InlineKeyboardButton(text=text, url=url))

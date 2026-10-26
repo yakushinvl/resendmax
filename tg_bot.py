@@ -37,9 +37,9 @@ def generate_code(length: int = 8) -> str:
 
 def get_main_keyboard(user_id: int):
     """Главное меню"""
-    kb = [[KeyboardButton(text="Подключить чат"), KeyboardButton(text="Мои чаты")]]
+    kb = [[KeyboardButton(text="Подключить чат", style="success"), KeyboardButton(text="Мои чаты", style="primary")]]
     if user_id == ADMIN_ID:
-        kb.append([KeyboardButton(text="Админ-панель")])
+        kb.append([KeyboardButton(text="Админ-панель", style="danger")])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 
@@ -86,7 +86,7 @@ async def my_chats(message: types.Message):
     await message.answer("Все твои подключённые чаты:")
     for m in mappings:
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="❌ Отключить", callback_data=f"del_{m.id}")]]
+            inline_keyboard=[[InlineKeyboardButton(text="❌ Отключить", callback_data=f"del_{m.id}", style="danger")]]
         )
         topic_str = f"\nТопик ID: {m.target_thread_id}" if m.target_thread_id else ""
         await message.answer(

@@ -32,7 +32,7 @@ SESSION_FILE = "max_session.json"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
 )
-WEB_APP_VERSION = "26.7.15"
+WEB_APP_VERSION = "26.8.4"
 WEB_SCREEN = "1080x1920 1.0x"
 LOCALE_TIMEZONES = (
     ("ru", "Europe/Moscow"), ("ru", "Europe/Kaliningrad"), ("ru", "Europe/Samara"),
@@ -96,7 +96,11 @@ class Opcode(int, Enum):
     FILE_UPLOAD = 87
     FILE_DOWNLOAD = 88
     AUTH_CHECK_PASSWORD = 115
+    MSG_SEND_CALLBACK = 118
     NOTIF_MESSAGE = 128
+    SEND_VOTE = 304
+    VOTERS_LIST_BY_ANSWER = 305
+    GET_POLL_UPDATES = 306
 
 
 class Command(int, Enum):
@@ -240,7 +244,10 @@ def unpack_frame(raw) -> Optional[Dict]:
 
     payload = {}
     if body:
-        payload = _normalize(msgpack.unpackb(body, raw=False, strict_map_key=False, ext_hook=_msgpack_ext_hook))
+        try:
+            payload = _normalize(msgpack.unpackb(body, raw=False, strict_map_key=False, ext_hook=_msgpack_ext_hook))
+        except msgpack.exceptions.ExtraData as e:
+            payload = _normalize(e.unpacked)
 
     return {
         "cmd": cmd,

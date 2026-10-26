@@ -64,6 +64,18 @@ async def handle_max_message(msg_payload):
             except Exception:
                 pass
 
+    # Проверка на пересланное сообщение (ForwardLink из MAX)
+    forward_link = msg.get("link")
+    if isinstance(forward_link, dict) and str(forward_link.get("type", "")).upper() == "FORWARD":
+        fwd_chat = forward_link.get("chat_name") or forward_link.get("chat_link")
+        if not fwd_chat and isinstance(forward_link.get("message"), dict):
+            fwd_chat = forward_link["message"].get("chat_name")
+        if fwd_chat:
+            if author_name:
+                author_name = f"{author_name} ↪️ переслано из {fwd_chat}"
+            else:
+                author_name = f"Переслано из {fwd_chat}"
+
     vk_attachments, tg_media, downloaded_files = [], [], []
     vk_peer_id = next((m.target_chat_id for m in mappings if m.platform == "vk"), 0)
 

@@ -22,6 +22,16 @@ from aiogram.types import (
 import database
 
 dp = Dispatcher()
+
+# Подключение роутера MIREA
+try:
+    from mirea.tg_bot import router as mirea_router
+    from mirea.db import init_db as init_mirea_db
+    init_mirea_db()
+    dp.include_router(mirea_router)
+    logger.info("Роутер MIREA подключен к основному боту")
+except Exception as e:
+    logger.warning(f"Роутер MIREA не подключен: {e}")
 ADMIN_ID = 499223756
 
 # Глобальные настройки

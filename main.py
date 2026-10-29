@@ -3,6 +3,7 @@ import html
 import logging
 import os
 import random
+import signal
 import time
 
 from dotenv import load_dotenv
@@ -286,24 +287,106 @@ async def main():
         return
 
     max_client.add_message_handler(handle_max_message)
-    tasks = []
+
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    def _signal_handler():
+        logger.info("Получен сигнал завершения работы (SIGINT/SIGTERM). Остановка сервисов...")
+        stop_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _signal_handler)
+        except (NotImplementedError, AttributeError):
+            try:
+                signal.signal(sig, lambda *_: stop_event.set())
+            except Exception:
+                pass
+
+    bot_tasks = []
     if os.getenv("VK_TOKEN") and vk_bot.bot:
-        vk_bot.bot.loop_wrapper.loop = asyncio.get_running_loop()
+        vk_bot.bot.loop_wrapper.loop = loop
         vk_bot.bot.loop_wrapper._running = True
-        tasks.append(vk_bot.bot.run_polling())
+        bot_tasks.append(asyncio.create_task(vk_bot.bot.run_polling(), name="vk_polling"))
         logger.info("Бот ВКонтакте готов")
 
     if os.getenv("TG_TOKEN") and tg_bot.bot:
-        tasks.append(tg_bot.dp.start_polling(tg_bot.bot))
+        bot_tasks.append(
+            asyncio.create_task(
+                tg_bot.dp.start_polling(
+                    tg_bot.bot,
+                    handle_signals=False,
+                    close_bot_session=True,
+                ),
+                name="tg_polling",
+            )
+        )
         logger.info("Бот Telegram готов")
 
-    if tasks:
-        logger.info("Запуск ботов...")
-        await asyncio.gather(*tasks)
+    if not bot_tasks:
+        logger.warning("Нет активных ботов для запуска.")
+        if max_client:
+            await max_client.close()
+        return
+
+    logger.info("Запуск ботов...")
+    stop_waiter = asyncio.create_task(stop_event.wait(), name="stop_waiter")
+
+    done, pending = await asyncio.wait(
+        [stop_waiter, *bot_tasks],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    logger.info("Начало процедуры корректного завершения...")
+
+    # 1. Остановка Telegram бота
+    if os.getenv("TG_TOKEN") and tg_bot.bot:
+        try:
+            logger.info("Остановка polling Telegram бота...")
+            await tg_bot.dp.stop_polling()
+        except Exception as e:
+            logger.warning(f"Ошибка при остановке polling Telegram: {e}")
+        try:
+            if hasattr(tg_bot.bot, "session") and tg_bot.bot.session:
+                await tg_bot.bot.session.close()
+        except Exception:
+            pass
+
+    # 2. Остановка ВКонтакте бота
+    if os.getenv("VK_TOKEN") and vk_bot.bot:
+        try:
+            logger.info("Остановка polling ВКонтакте бота...")
+            if hasattr(vk_bot.bot, "polling") and vk_bot.bot.polling:
+                vk_bot.bot.polling.stop()
+        except Exception as e:
+            logger.warning(f"Ошибка при остановке polling ВКонтакте: {e}")
+        try:
+            if hasattr(vk_bot.bot.api, "http_client") and vk_bot.bot.api.http_client:
+                await vk_bot.bot.api.http_client.close()
+        except Exception as e:
+            logger.warning(f"Ошибка при закрытии http_client ВКонтакте: {e}")
+
+    # 3. Закрытие соединения MAX клиента
+    if max_client:
+        try:
+            logger.info("Остановка клиента MAX...")
+            await max_client.close()
+        except Exception as e:
+            logger.warning(f"Ошибка при остановке MAX клиента: {e}")
+
+    # 4. Отмена всех оставшихся задач
+    all_tasks = [stop_waiter, *bot_tasks]
+    for t in all_tasks:
+        if not t.done():
+            t.cancel()
+
+    await asyncio.gather(*all_tasks, return_exceptions=True)
+    logger.info("Все сервисы успешно завершили работу.")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass

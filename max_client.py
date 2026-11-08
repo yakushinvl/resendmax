@@ -98,6 +98,8 @@ class Opcode(int, Enum):
     AUTH_CHECK_PASSWORD = 115
     MSG_SEND_CALLBACK = 118
     NOTIF_MESSAGE = 128
+    NOTIF_MSG_DELETE_RANGE = 140
+    NOTIF_MSG_DELETE = 142
     SEND_VOTE = 304
     VOTERS_LIST_BY_ANSWER = 305
     GET_POLL_UPDATES = 306
@@ -291,8 +293,22 @@ class Message(dict):
         self.text = msg.get("text") or ""
         self.time = msg.get("time") or 0
         self.type = msg.get("type") or ""
+        self.status = msg.get("status") or self._raw.get("status")
         self.attaches = msg.get("attaches") or []
         self.elements = msg.get("elements") or []
+
+    @property
+    def is_deleted(self) -> bool:
+        """Проверяет, является ли сообщение удаленным в MAX"""
+        status_str = str(self.status or "").upper()
+        type_str = str(self.type or "").upper()
+        raw_msg = self._raw.get("message", {}) if isinstance(self._raw.get("message"), dict) else {}
+        return (
+            status_str in ("REMOVED", "DELETED")
+            or type_str in ("REMOVED", "DELETE", "DELETED")
+            or bool(raw_msg.get("deleted"))
+            or bool(self._raw.get("deleted"))
+        )
 
     @property
     def chatId(self) -> Optional[int]:
@@ -345,6 +361,7 @@ class MaxClient:
         self.seq = -1
         self.pending_responses: Dict[int, asyncio.Future] = {}
         self.message_handlers: List[Callable] = []
+        self.delete_handlers: List[Callable] = []
         self.is_connected = False
         self._recv_task = None
         self._ping_task = None
@@ -902,7 +919,11 @@ class MaxClient:
         if handler not in self.message_handlers:
             self.message_handlers.append(handler)
 
-    async def _safe_call_handler(self, handler: Callable, msg: Message):
+    def add_delete_handler(self, handler: Callable):
+        if handler not in self.delete_handlers:
+            self.delete_handlers.append(handler)
+
+    async def _safe_call_handler(self, handler: Callable, msg: Any):
         try:
             res = handler(msg)
             if asyncio.iscoroutine(res):
@@ -962,6 +983,10 @@ class MaxClient:
                     msg_obj = Message(payload, client=self)
                     for h in list(self.message_handlers):
                         asyncio.create_task(self._safe_call_handler(h, msg_obj))
+                elif cmd == Command.REQUEST and opcode in (Opcode.NOTIF_MSG_DELETE, Opcode.NOTIF_MSG_DELETE_RANGE):
+                    payload = frame.get("payload", {})
+                    for dh in list(self.delete_handlers):
+                        asyncio.create_task(self._safe_call_handler(dh, payload))
         except Exception as e:
             self.logger.warning(f"Соединение с MAX потеряно: {e}")
         finally:

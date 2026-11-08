@@ -1,3 +1,4 @@
+import time
 from typing import Optional
 from sqlmodel import Field, SQLModel
 
@@ -27,3 +28,12 @@ class UserLimit(SQLModel, table=True):
     user_platform_id: int = Field(primary_key=True)
     platform: str = Field(primary_key=True)
     max_limit: int = Field(default=3)
+
+
+class ProcessedMessage(SQLModel, table=True):
+    """История обработанных сообщений для дедупликации и предотвращения повторной пересылки"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    max_chat_id: int = Field(index=True)
+    message_id: str = Field(index=True)
+    status: str = Field(default="SENT")  # "SENT", "DELETED", "EMPTY"
+    processed_at: int = Field(default_factory=lambda: int(time.time()), index=True)

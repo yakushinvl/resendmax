@@ -29,20 +29,76 @@ logger = logging.getLogger("Orchestrator")
 ATTACHMENTS_DIR = "attachments"
 os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
 
+_in_flight_messages = set()
+_in_flight_lock = asyncio.Lock()
+
+
+async def handle_max_delete(payload):
+    """Обработчик событий удаления сообщений из MAX (opcodes 140, 142)"""
+    chat_id = payload.get("chatId")
+    if not chat_id and isinstance(payload.get("chat"), dict):
+        chat_id = payload["chat"].get("id")
+    msg_ids = payload.get("messageIds") or payload.get("message_ids") or []
+    if chat_id and msg_ids:
+        for mid in msg_ids:
+            logger.info(f"Получено событие удаления сообщения {mid} в чате MAX {chat_id}")
+            database.mark_message_processed(chat_id, mid, status="DELETED")
+
 
 async def handle_max_message(msg_payload):
-    chat_id = msg_payload.get("chatId")
+    chat_id = msg_payload.get("chatId") or getattr(msg_payload, "chat_id", None)
     msg = msg_payload.get("message", {})
+    if not isinstance(msg, dict):
+        msg = {}
 
-    if msg.get("type") == "CONTROL":
+    msg_id = msg.get("id") or getattr(msg_payload, "id", None) or msg_payload.get("id")
+    msg_type = str(msg.get("type", "") or getattr(msg_payload, "type", "")).upper()
+    msg_status = str(msg.get("status", "") or getattr(msg_payload, "status", "") or msg_payload.get("status", "")).upper()
+
+    # Проверка на удаление сообщения (status == 'REMOVED', 'DELETED' или признак удаления)
+    is_deleted = (
+        getattr(msg_payload, "is_deleted", False)
+        or msg_status in ("REMOVED", "DELETED")
+        or msg_type in ("REMOVED", "DELETE", "DELETED")
+        or bool(msg.get("deleted"))
+        or bool(msg_payload.get("deleted"))
+    )
+
+    if is_deleted:
+        if chat_id and msg_id:
+            logger.info(f"Сообщение {msg_id} в чате {chat_id} удалено в MAX. Повторная отправка отменена.")
+            database.mark_message_processed(chat_id, msg_id, status="DELETED")
         return
 
-    text = msg.get("text", "")
-    elements = msg.get("elements", [])
+    if msg_type == "CONTROL":
+        return
 
     mappings = database.get_mappings_for_max_chat(chat_id)
     if not mappings:
         return
+
+    # Защита от дублирования сообщений (дедупликация в оперативной памяти и в базе SQLite)
+    flight_key = (chat_id, str(msg_id)) if (chat_id and msg_id) else None
+    if flight_key:
+        async with _in_flight_lock:
+            if flight_key in _in_flight_messages or database.is_message_processed(chat_id, msg_id):
+                logger.info(f"Сообщение {msg_id} в чате {chat_id} уже отправлено или обрабатывается, пропуск дубликата.")
+                return
+            _in_flight_messages.add(flight_key)
+
+    try:
+        await _process_and_forward_message(chat_id, msg_payload, msg, msg_id, mappings)
+        if chat_id and msg_id:
+            database.mark_message_processed(chat_id, msg_id, status="SENT")
+    finally:
+        if flight_key:
+            async with _in_flight_lock:
+                _in_flight_messages.discard(flight_key)
+
+
+async def _process_and_forward_message(chat_id, msg_payload, msg, msg_id, mappings):
+    text = msg.get("text", "")
+    elements = msg.get("elements", [])
 
     # Определение автора сообщения (Имя и Фамилия пользователя / название бота)
     sender_id = msg.get("sender") or msg.get("author") or msg_payload.get("sender")
@@ -190,6 +246,8 @@ async def handle_max_message(msg_payload):
 
     # Если в сообщении нет ни текста, ни медиафайлов, ни кнопок, ни опросов - не пересылаем
     if not (text or vk_attachments or tg_media or button_rows or polls):
+        if chat_id and msg_id:
+            database.mark_message_processed(chat_id, msg_id, status="EMPTY")
         return
 
     # Формирование текста для Telegram с указанием автора
@@ -260,6 +318,10 @@ async def handle_max_message(msg_payload):
         except Exception as e:
             logger.error(f"Ошибка пересылки в {m.platform}: {e}")
 
+    # Фиксируем успешную отправку сообщения для дедупликации
+    if chat_id and msg_id:
+        database.mark_message_processed(chat_id, msg_id, status="SENT")
+
     # Очистка временных файлов
     for p in downloaded_files:
         try:
@@ -271,6 +333,11 @@ async def handle_max_message(msg_payload):
 
 async def main():
     database.create_db_and_tables()
+    try:
+        database.cleanup_old_processed_messages(days=7)
+    except Exception as ce:
+        logger.warning(f"Не удалось выполнить очистку старых сообщений: {ce}")
+
     m_tok, m_phone = os.getenv("MAX_TOKEN"), os.getenv("MAX_PHONE")
     if not m_tok and not m_phone:
         logger.error("Не указан MAX_TOKEN или MAX_PHONE в конфигурации .env")
@@ -287,6 +354,7 @@ async def main():
         return
 
     max_client.add_message_handler(handle_max_message)
+    max_client.add_delete_handler(handle_max_delete)
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()

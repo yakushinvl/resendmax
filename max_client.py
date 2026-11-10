@@ -923,6 +923,16 @@ class MaxClient:
         if handler not in self.delete_handlers:
             self.delete_handlers.append(handler)
 
+    def on_delete(self, func: Optional[Callable] = None):
+        """Декоратор для регистрации обработчика удаления сообщений"""
+        def decorator(handler: Callable):
+            self.add_delete_handler(handler)
+            return handler
+
+        if func is not None:
+            return decorator(func)
+        return decorator
+
     async def _safe_call_handler(self, handler: Callable, msg: Any):
         try:
             res = handler(msg)
